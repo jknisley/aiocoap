@@ -73,7 +73,7 @@ class TokenManager(interfaces.RequestInterface, interfaces.TokenManager):
         """Reserve and return a new Token for request."""
         #TODO: add proper Token handling
         self._token = (self._token + 1) % (2 ** 64)
-        return self._token.to_bytes(8, 'big').lstrip(b'\0')
+        return str(self._token).encode()
 
     #
     # implement the tokenmanager interface
