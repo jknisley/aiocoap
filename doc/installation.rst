@@ -67,6 +67,9 @@ The extras currently supported are:
 
 * ``tinydtls``: Required for using CoAP over DTLS.
 
+* ``prettyprint``: Allows using the ``--color`` and ``--pretty-print`` options
+  of :doc:`module/aiocoap.cli.client`.
+
 * ``docs``: Installs tools needed to build the documentation (not part of
   ``all``).
 

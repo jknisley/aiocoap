@@ -25,7 +25,10 @@ except ImportError:
     pass # that's normal on some platforms, and ok since it's just a usability enhancement
 
 import aiocoap
+import aiocoap.defaults
 import aiocoap.proxy.client
+from aiocoap.util.cli import ActionNoYes
+from aiocoap.numbers import media_types
 
 def build_parser():
     p = argparse.ArgumentParser(description=__doc__)
@@ -41,6 +44,17 @@ def build_parser():
     p.add_argument('-q', '--quiet', help="Decrease the debug output", action="count")
     p.add_argument('--interactive', help="Enter interactive mode", action="store_true") # careful: picked before parsing
     p.add_argument('--credentials', help="Load credentials to use from a given file", type=Path)
+
+    p.add_argument('--color',
+            help="Color output (default on TTYs if all required modules are installed)",
+            default=None,
+            action=ActionNoYes,
+            )
+    p.add_argument('--pretty-print',
+            help="Pretty-print known content formats (default on TTYs if all required modules are installed)",
+            default=None,
+            action=ActionNoYes,
+            )
     p.add_argument('url', help="CoAP address to fetch")
 
     return p
@@ -59,20 +73,28 @@ def configure_logging(verbosity):
     elif verbosity >= 2:
         logging.getLogger('coap').setLevel(logging.DEBUG)
 
+def colored(text, options, *args, **kwargs):
+    """Apply termcolor.colored with the given args if options.color is set"""
+    if not options.color:
+        return text
+
+    import termcolor
+    return termcolor.colored(text, *args, **kwargs)
+
 def incoming_observation(options, response):
     if options.observe_exec:
         p = subprocess.Popen(options.observe_exec, shell=True, stdin=subprocess.PIPE)
         # FIXME this blocks
         p.communicate(response.payload)
     else:
-        sys.stdout.buffer.write(b'---\n')
+        sys.stdout.write(colored('---', options, 'grey', attrs=['bold']) + '\n')
         if response.code.is_successful():
-            sys.stdout.buffer.write(response.payload + (b'\n' if not response.payload.endswith(b'\n') else b''))
-            sys.stdout.buffer.flush()
+            present(response, options, file=sys.stderr)
         else:
-            print(response.code, file=sys.stderr)
+            sys.stdout.flush()
+            print(colored(response.code, options, 'red'), file=sys.stderr)
             if response.payload:
-                print(response.payload.decode('utf-8'), file=sys.stderr)
+                present(response, options, file=sys.stderr)
 
 def apply_credentials(context, credentials, errfn):
     if credentials.suffix == '.json':
@@ -81,9 +103,79 @@ def apply_credentials(context, credentials, errfn):
     else:
         raise errfn("Unknown suffix: %s (expected: .json)" % (credentials.suffix))
 
+def present(message, options, file=sys.stdout):
+    """Write a message payload to the output, pretty printing and/or coloring
+    it as configured in the options."""
+    if not message.payload:
+        return
+
+    payload = None
+
+    mime = media_types.get(message.opt.content_format,
+            'application/octet-stream')
+    if options.pretty_print:
+        from aiocoap.util.prettyprint import pretty_print
+        prettyprinted = pretty_print(message)
+        if prettyprinted is not None:
+            (infos, mime, payload) = prettyprinted
+            if not options.quiet:
+                for i in infos:
+                    print(colored(i, options, 'grey', attrs=['bold']),
+                            file=sys.stderr)
+
+    color = options.color
+    if color:
+        from aiocoap.util.prettyprint import lexer_for_mime
+        import pygments
+        try:
+            lexer = lexer_for_mime(mime)
+        except pygments.util.ClassNotFound:
+            color = False
+
+    if color and payload is None:
+        # Coloring requires a unicode-string style payload, either from the
+        # mime type or from the pretty printer.
+        try:
+            payload = message.payload.decode('utf8')
+        except UnicodeDecodeError:
+            color = False
+
+    if color:
+        from pygments.formatters import TerminalFormatter
+        from pygments import highlight
+        highlit = highlight(
+            payload,
+            lexer,
+            TerminalFormatter(),
+            )
+        # The TerminalFormatter already adds an end-of-line character, not
+        # trying to add one for any missing trailing newlines.
+        print(highlit, file=file, end="")
+        file.flush()
+    else:
+        if payload is None:
+            file.buffer.write(message.payload)
+            if file.isatty() and message.payload[-1:] != b'\n':
+                file.write("\n")
+        else:
+            file.write(payload)
+            if file.isatty() and payload[-1] != '\n':
+                file.write("\n")
+
 async def single_request(args, context=None):
     parser = build_parser()
     options = parser.parse_args(args)
+
+    pretty_print_modules = aiocoap.defaults.prettyprint_missing_modules()
+    if pretty_print_modules and \
+            (options.color is True or options.pretty_print is True):
+        parser.error("Color and pretty printing require the following"
+                " additional module(s) to be installed: %s" %
+                ", ".join(pretty_print_modules))
+    if options.color is None:
+        options.color = sys.stdout.isatty() and not pretty_print_modules
+    if options.pretty_print is None:
+        options.pretty_print = sys.stdout.isatty() and not pretty_print_modules
 
     configure_logging((options.verbose or 0) - (options.quiet or 0))
 
@@ -170,14 +262,10 @@ async def single_request(args, context=None):
             sys.exit(1)
 
         if response_data.code.is_successful():
-            sys.stdout.buffer.write(response_data.payload)
-            sys.stdout.buffer.flush()
-            if response_data.payload and not response_data.payload.endswith(b'\n') and not options.quiet:
-                sys.stderr.write('\n(No newline at end of message)\n')
+            present(response_data, options)
         else:
-            print(response_data.code, file=sys.stderr)
-            if response_data.payload:
-                print(response_data.payload.decode('utf-8'), file=sys.stderr)
+            print(colored(response_data.code, options, 'red'), file=sys.stderr)
+            present(response_data, options, file=sys.stderr)
             sys.exit(1)
 
         if options.observe:

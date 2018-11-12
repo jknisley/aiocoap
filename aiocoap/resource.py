@@ -224,12 +224,12 @@ class WKCResource(Resource):
             else:
                 matchexp = lambda x: x == v
 
-            if k in ('rt', 'if'):
-                filters.append(lambda link: any(matchexp(part) for part in (" ".join(getattr(link, k))).split(" ")))
+            if k in ('rt', 'if', 'ct'):
+                filters.append(lambda link: any(matchexp(part) for part in (" ".join(getattr(link, k, ()))).split(" ")))
             elif k in ('href',): # x.href is single valued
                 filters.append(lambda link: matchexp(getattr(link, k)))
             else:
-                filters.append(lambda link: any(matchexp(part) for part in getattr(link, k)))
+                filters.append(lambda link: any(matchexp(part) for part in getattr(link, k, ())))
 
         while filters:
             links.links = filter(filters.pop(), links.links)
@@ -237,12 +237,13 @@ class WKCResource(Resource):
 
         response = link_format_to_message(request, links)
 
-        if not links.links and request.remote.is_multicast:
-            if request.opt.no_response is not None:
+        if request.opt.uri_query and not links.links and \
+                request.remote.is_multicast_locally:
+            if request.opt.no_response is None:
                 # If the filter does not match, multicast requests should not
                 # be responded to -- that's equivalent to a "no_response on
                 # 2.xx" option.
-                response.opt.no_response = 0x20
+                response.opt.no_response = 0x02
 
         return response
 
@@ -310,10 +311,21 @@ class Site(interfaces.ObservableResource, PathCapable):
         path components from the request that are covered by the child's
         position within the site. Returns the child and a request with a path
         shortened by the components in the child's path, or raises a
-        KeyError."""
+        KeyError.
+
+        While producing stripped messages, this adds a ._original_request_uri
+        attribute to the messages which holds the request URI before the
+        stripping is started. That allows internal components to access the
+        original URI until there is a variation of the request API that allows
+        accessing this in a better usable way."""
+
+        original_request_uri = getattr(request, '_original_request_uri',
+                request.get_request_uri(local_is_server=True))
 
         if request.opt.uri_path in self._resources:
-            return self._resources[request.opt.uri_path], request.copy(uri_path=())
+            stripped = request.copy(uri_path=())
+            stripped._original_request_uri = original_request_uri
+            return self._resources[request.opt.uri_path], stripped
 
         if not request.opt.uri_path:
             raise KeyError()
@@ -326,7 +338,9 @@ class Site(interfaces.ObservableResource, PathCapable):
                 if remainder == [""]:
                     # sub-sites should see their root resource like sites
                     remainder = []
-                return res, request.copy(uri_path=remainder)
+                stripped = request.copy(uri_path=remainder)
+                stripped._original_request_uri = original_request_uri
+                return res, stripped
             remainder.insert(0, path[-1])
             path = path[:-1]
         raise KeyError()
