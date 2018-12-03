@@ -189,7 +189,8 @@ class TokenManager(interfaces.RequestInterface, interfaces.TokenManager):
 
         # FIXME: pick a suitably short one where available, and a longer one
         # for observations if many short ones are already in-flight
-        msg.token = self.next_token()
+        # allow token to manually be set on request
+        msg.token = msg.token or self.next_token()
 
         self.log.debug("Sending request - Token: %s, Remote: %s" % (msg.token.hex(), msg.remote))
 
